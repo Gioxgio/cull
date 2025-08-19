@@ -1,13 +1,12 @@
 #define _DEFAULT_SOURCE
 
 #include <dirent.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define MAX_NAME_SIZE 256
-#define MAX_PATH_SIZE 1024
 struct file {
     char *name;
     char *path;
@@ -18,7 +17,7 @@ void string_print(void *);
 int string_sort(void *, void *);
 
 /* LIST */
-typedef struct list *List;
+typedef struct list *SortedList;
 typedef void *Item;
 struct list {
     struct node *top;
@@ -29,52 +28,47 @@ struct node {
     struct node *next;
 };
 
-List list_create(int(Item, Item));
-void list_push(List, Item);
-Item list_pop(List);
-void list_each(List, void(Item));
-void list_destroy(List);
+SortedList list_create(int(Item, Item));
+void list_push(SortedList, Item);
+Item list_pop(SortedList);
+void list_each(SortedList, void(Item));
+void list_destroy(SortedList, void(Item));
 /* DIR */
 void open_dir(DIR **, char *);
-void load_dir_content(List, char *);
+void load_dir_content(SortedList, char *);
 bool is_user_dir(struct dirent *);
 char *d_type_to_string(int);
+void file_destroy(Item);
+
+void find_duplicates(SortedList, SortedList);
 
 // TODO
-// Replace list with SortedList
-// - [ ] Add comparation
-// - [ ] Fix TODO
 // - [ ] Split code into files + create makefile
-// - [ ] Add pop method
 int main(int argc, char **argv) {
 
-    DIR *d1, *d2;
-    List l1, l2;
+    SortedList l1, l2;
 
     if (argc != 3) {
         printf("You need to pass two directories!\n");
         exit(EXIT_FAILURE);
     }
 
-    d1 = NULL;
-    d2 = NULL;
-
     l1 = list_create(file_sort);
     l2 = list_create(file_sort);
 
+    printf("Loading %s content... ", argv[1]);
     load_dir_content(l1, argv[1]);
+    printf("Done\n");
+    printf("Loading %s content... ", argv[2]);
     load_dir_content(l2, argv[2]);
+    printf("Done\n");
 
-    printf("Files in folder folder %s\n", argv[1]);
-    list_each(l1, file_print);
-    printf("Files in folder folder %s\n", argv[2]);
-    list_each(l2, file_print);
+    printf("\nComparing files...\n\n");
+    find_duplicates(l1, l2);
+    printf("\nDone\n");
 
-    closedir(d1);
-    closedir(d2);
-
-    list_destroy(l1);
-    list_destroy(l2);
+    list_destroy(l1, file_destroy);
+    list_destroy(l2, file_destroy);
 
     printf("Done!\n");
 
@@ -94,10 +88,7 @@ int file_sort(void *a, void *b) {
     f1 = (struct file *)a;
     f2 = (struct file *)b;
 
-    printf("name1: %s, name2: %s, result: %d\n", f1->name, f2->name,
-           strncmp(f1->name, f2->name, MAX_NAME_SIZE));
-
-    return strncmp(f1->name, f2->name, MAX_NAME_SIZE);
+    return strncmp(f1->name, f2->name, NAME_MAX);
 }
 
 int string_sort(void *a, void *b) {
@@ -106,7 +97,7 @@ int string_sort(void *a, void *b) {
     s1 = (char *)a;
     s2 = (char *)b;
 
-    return strncmp(s1, s2, MAX_NAME_SIZE);
+    return strncmp(s1, s2, NAME_MAX);
 }
 
 /* DIR */
@@ -118,49 +109,75 @@ void open_dir(DIR **dir, char *path) {
     }
 }
 
-void load_dir_content(List l, char *path) {
+void load_dir_content(SortedList l, char *path) {
     char *current_path, *new_path;
-    List paths;
+    SortedList paths;
     DIR *dir;
     struct dirent *de;
     struct file *f;
 
     paths = list_create(string_sort);
-    list_push(paths, strndup(path, strnlen(path, MAX_NAME_SIZE)));
+    list_push(paths, strndup(path, strnlen(path, NAME_MAX)));
 
     while ((current_path = list_pop(paths)) != NULL) {
         open_dir(&dir, current_path);
         while ((de = readdir(dir)) != NULL) {
             if (de->d_type == DT_REG) {
-                f = malloc(sizeof(*de));
-                f->name = strndup(de->d_name, MAX_NAME_SIZE);
-                f->path = strndup(current_path, MAX_NAME_SIZE);
+                f = malloc(sizeof(*f));
+                f->name = strndup(de->d_name, NAME_MAX);
+                f->path = strndup(current_path, NAME_MAX);
                 list_push(l, f);
             } else if (de->d_type == DT_DIR &&
-                       strncmp(de->d_name, ".", MAX_NAME_SIZE) &&
-                       strncmp(de->d_name, "..", MAX_NAME_SIZE)) {
+                       strncmp(de->d_name, ".", NAME_MAX) &&
+                       strncmp(de->d_name, "..", NAME_MAX)) {
 
-                new_path = malloc(strnlen(current_path, MAX_NAME_SIZE) +
-                                  strnlen(de->d_name, MAX_NAME_SIZE) + 2);
+                new_path = malloc(strnlen(current_path, NAME_MAX) +
+                                  strnlen(de->d_name, NAME_MAX) + 2);
                 sprintf(new_path, "%s/%s", current_path, de->d_name);
                 list_push(paths, new_path);
             }
         }
+        free(current_path);
+        closedir(dir);
     }
 
-    list_destroy(paths);
+    list_destroy(paths, free);
 }
 
-void compare_lists(List left, List right) {
-    char l_filename, r_filename;
+void find_duplicates(SortedList l_list, SortedList r_list) {
+    char *l_name, *r_name;
     struct file *l_item, *r_item;
+    int res;
 
-    if ((l_item = list_pop(left)) == NULL &&
-        (r_item = list_pop(right)) == NULL) {
-        printf("One of the folders is empty\n");
-        return;
+    r_item = list_pop(r_list);
+    l_item = list_pop(l_list);
+
+    while (l_item != NULL && r_item != NULL) {
+        r_name = r_item->name;
+        l_name = l_item->name;
+
+        res = strncmp(l_name, r_name, NAME_MAX);
+
+        if (res < 0) {
+            file_destroy(l_item);
+            l_item = list_pop(l_list);
+        } else if (res == 0) {
+            printf("DUPL:\t%s\n", r_name);
+            file_destroy(l_item);
+            file_destroy(r_item);
+            r_item = list_pop(r_list);
+            l_item = list_pop(l_list);
+        } else { // result > 0
+                 // printf("NEW :\t%s\n", r_name);
+            file_destroy(r_item);
+            r_item = list_pop(r_list);
+        }
     }
 
+    while ((r_item = list_pop(r_list)) != NULL) {
+        // r_name = r_item->name;
+        // printf("NEW :\t%s\n", r_name);
+    }
 }
 
 bool is_user_dir(struct dirent *de) { return DT_DIR == de->d_type; }
@@ -175,19 +192,26 @@ char *d_type_to_string(int t) {
     return "Ukwn";
 }
 
+void file_destroy(Item f) {
+    struct file *file;
+    file = (struct file *)f;
+    free(file->name);
+    free(file->path);
+    free(file);
+}
+
 /* list */
-List list_create(int cmp(Item, Item)) {
-    List l;
-    // TODO handle failure
+SortedList list_create(int cmp(Item, Item)) {
+    SortedList l;
     l = malloc(sizeof(*l));
     l->cmp = cmp;
     l->top = NULL;
     return l;
 }
 
-void list_push(List l, Item i) {
+void list_push(SortedList l, Item i) {
     struct node *new, *prev, *curr;
-    // TODO handle failure
+
     new = malloc(sizeof(*new));
     new->item = i;
 
@@ -207,8 +231,9 @@ void list_push(List l, Item i) {
     }
 }
 
-Item list_pop(List l) {
+Item list_pop(SortedList l) {
     struct node *top;
+    Item i;
 
     if (l == NULL) {
         return NULL;
@@ -220,11 +245,13 @@ Item list_pop(List l) {
     }
 
     l->top = top->next;
+    i = top->item;
+    free(top);
 
-    return top->item;
+    return i;
 }
 
-void list_each(List l, void consumer(Item)) {
+void list_each(SortedList l, void consumer(Item)) {
     struct node *top;
 
     if (l == NULL) {
@@ -238,8 +265,7 @@ void list_each(List l, void consumer(Item)) {
     }
 }
 
-// TODO Add destroy function for file and pass it to this function
-void list_destroy(List l) {
+void list_destroy(SortedList l, void item_destroyer(Item)) {
     struct node *next, *top;
 
     if (l == NULL) {
@@ -249,11 +275,10 @@ void list_destroy(List l) {
     top = l->top;
     while (top) {
         next = top->next;
-        // TODO handle failure
+        item_destroyer(top->item);
         free(top);
         top = next;
     }
 
-    // TODO handle failure
     free(l);
 }
